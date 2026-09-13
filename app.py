@@ -2,6 +2,7 @@
 live tick stream to the browser over SSE (the browser can't decode Yahoo's
 protobuf frames itself, so this process does it)."""
 import json
+import os
 import queue
 import threading
 import time
@@ -16,9 +17,29 @@ app = Flask(__name__, static_folder=None)
 
 _lock = threading.Lock()
 _clients = []          # one Queue per connected browser
-_watch = set()         # symbols the panes currently care about
+_watch = {}            # client id -> symbols that browser's panes want
 _ws = None
 _thread = None
+
+
+def _union():
+    out = set()
+    for syms in _watch.values():
+        out |= syms
+    return out
+
+
+def _sync_subscriptions(before, after):
+    """Move Yahoo's subscription to match what's actually being watched."""
+    if _ws is None:
+        return
+    try:
+        if after - before:
+            _ws.subscribe(sorted(after - before))
+        if before - after:
+            _ws.unsubscribe(sorted(before - after))
+    except Exception as e:
+        print("subscription sync failed: %s" % e)
 
 
 def _publish(ev):
@@ -43,7 +64,7 @@ def _run():
     while True:
         try:
             with _lock:
-                syms = sorted(_watch)
+                syms = sorted(_union())
             if not syms:
                 time.sleep(2)
                 continue
@@ -70,21 +91,26 @@ def _start():
 
 @app.post("/api/watch")
 def watch():
-    global _watch
-    syms = {s for s in request.get_json(force=True).get("symbols", []) if isinstance(s, str)}
+    body = request.get_json(force=True)
+    cid = str(body.get("client") or "anon")
+    syms = {s for s in body.get("symbols", []) if isinstance(s, str)}
+    # Watchlists are per browser and the socket subscribes to the union, so one
+    # viewer opening a chart can't unsubscribe another viewer's symbols.
     with _lock:
-        added, _watch = syms - _watch, syms
-    if _ws is not None and added:
-        try:
-            _ws.subscribe(sorted(added))         # additive; takes effect immediately
-        except Exception as e:
-            print("subscribe failed: %s" % e)
+        before = _union()
+        if syms:
+            _watch[cid] = syms
+        else:
+            _watch.pop(cid, None)
+        after = _union()
+    _sync_subscriptions(before, after)
     _start()
-    return jsonify(ok=True, watching=sorted(syms))
+    return jsonify(ok=True, watching=sorted(after))
 
 
 @app.get("/api/stream")
 def stream():
+    cid = request.args.get("client")
     q = queue.Queue(maxsize=200)
     _clients.append(q)
 
@@ -99,6 +125,12 @@ def stream():
         finally:
             if q in _clients:
                 _clients.remove(q)
+            if cid:                              # browser closed the tab
+                with _lock:
+                    before = _union()
+                    _watch.pop(cid, None)
+                    after = _union()
+                _sync_subscriptions(before, after)
 
     return Response(gen(), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -149,5 +181,6 @@ def asset(name):
     return send_from_directory(".", name)
 
 
-if __name__ == "__main__":
-    app.run(port=5001, threaded=True, use_reloader=False)
+if __name__ == "__main__":   # local dev; production runs under gunicorn (see render.yaml)
+    app.run(host="127.0.0.1", port=int(os.environ.get("PORT", 5001)),
+            threaded=True, use_reloader=False)

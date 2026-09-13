@@ -22,6 +22,20 @@ no API keys, no accounts.
 - **Scroll back** past the initial window and older candles load on demand.
 - Everything persists in localStorage.
 
+## Deploy
+
+One-click via the Render blueprint in `render.yaml`:
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/AnirbanSinha27/finance-tracker-webview)
+
+Or: Render dashboard -> New -> Blueprint -> pick this repo. Free plan sleeps
+after 15 minutes idle, so the first hit after a nap takes ~50s to wake.
+
+**Not Vercel/Netlify.** This needs a process that stays alive — a background
+thread holding Yahoo's websocket and an SSE connection held open per browser.
+Serverless functions are stateless and short-lived and can host neither. Any
+host that runs a normal long-lived process works: Render, Railway, Fly.
+
 ## Testing
 
     node test_indicators.js     # indicator math

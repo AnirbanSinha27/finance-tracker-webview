@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: live-charts
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    # --workers 1 is load-bearing, not a tuning choice. The Yahoo websocket thread
+    # and the list of connected SSE browsers live in this process's memory, so a
+    # second worker would open a second upstream socket and serve ticks to only
+    # half the browsers. Scale with threads, never with workers.
+    startCommand: >
+      gunicorn app:app --workers 1 --threads 16 --worker-class gthread
+      --timeout 120 --bind 0.0.0.0:$PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"

@@ -50,10 +50,11 @@ function hlSubscribe(coin, tf, cb) {
 
 /* ------------------------------------ live feed: Yahoo ticks relayed by Flask */
 const yhSubs = new Map();                 // symbol -> Set<cb>
+const CLIENT = crypto.randomUUID();       // so two open tabs don't clobber each other's watchlist
 let sse, sseOk = false;
 
 function yhConnect() {
-  sse = new EventSource('/api/stream');
+  sse = new EventSource('/api/stream?client=' + CLIENT);
   sse.onopen = () => { sseOk = true; setStatus(); };
   sse.onerror = () => { sseOk = false; setStatus(); };   // EventSource retries on its own
   sse.onmessage = e => {
@@ -65,7 +66,7 @@ function yhConnect() {
 
 function pushWatchlist() {
   fetch('/api/watch', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ symbols: [...yhSubs.keys()] }) }).catch(() => {});
+                        body: JSON.stringify({ client: CLIENT, symbols: [...yhSubs.keys()] }) }).catch(() => {});
 }
 
 function yhSubscribe(symbol, cb) {
