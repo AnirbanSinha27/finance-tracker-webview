@@ -1,0 +1,153 @@
+"""Local bridge: serves the dashboard, proxies data_source.py, and relays Yahoo's
+live tick stream to the browser over SSE (the browser can't decode Yahoo's
+protobuf frames itself, so this process does it)."""
+import json
+import queue
+import threading
+import time
+
+from flask import Flask, Response, abort, jsonify, request, send_from_directory
+
+import data_source as ds
+
+app = Flask(__name__, static_folder=None)
+
+# ------------------------------------------------------ Yahoo tick relay (SSE)
+
+_lock = threading.Lock()
+_clients = []          # one Queue per connected browser
+_watch = set()         # symbols the panes currently care about
+_ws = None
+_thread = None
+
+
+def _publish(ev):
+    for q in list(_clients):
+        try:
+            q.put_nowait(ev)
+        except queue.Full:
+            pass       # a wedged client doesn't get to stall the stream
+
+
+def _on_msg(m):
+    sym, price, t = m.get("id"), m.get("price"), m.get("time")
+    if not sym or price is None:
+        return
+    _publish({"symbol": sym, "price": float(price),
+              "time": int(t) // 1000 if t else int(time.time())})
+
+
+def _run():
+    global _ws
+    import yfinance as yf
+    while True:
+        try:
+            with _lock:
+                syms = sorted(_watch)
+            if not syms:
+                time.sleep(2)
+                continue
+            _ws = yf.WebSocket(verbose=False)
+            _ws.subscribe(syms)
+            _ws.listen(_on_msg)                  # blocks until the socket drops
+        except Exception as e:
+            print("yahoo stream: %s — reconnecting" % e)
+        finally:
+            try:
+                _ws.close()
+            except Exception:
+                pass
+            _ws = None
+        time.sleep(3)
+
+
+def _start():
+    global _thread
+    if _thread is None:
+        _thread = threading.Thread(target=_run, daemon=True)
+        _thread.start()
+
+
+@app.post("/api/watch")
+def watch():
+    global _watch
+    syms = {s for s in request.get_json(force=True).get("symbols", []) if isinstance(s, str)}
+    with _lock:
+        added, _watch = syms - _watch, syms
+    if _ws is not None and added:
+        try:
+            _ws.subscribe(sorted(added))         # additive; takes effect immediately
+        except Exception as e:
+            print("subscribe failed: %s" % e)
+    _start()
+    return jsonify(ok=True, watching=sorted(syms))
+
+
+@app.get("/api/stream")
+def stream():
+    q = queue.Queue(maxsize=200)
+    _clients.append(q)
+
+    def gen():
+        try:
+            yield "retry: 3000\n\n"
+            while True:
+                try:
+                    yield "data: %s\n\n" % json.dumps(q.get(timeout=15))
+                except queue.Empty:
+                    yield ": keepalive\n\n"
+        finally:
+            if q in _clients:
+                _clients.remove(q)
+
+    return Response(gen(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ------------------------------------------------------------------- history
+
+@app.get("/api/sources")
+def sources():
+    return jsonify({
+        "step": ds.STEP,
+        "sources": {
+            name: {"label": fn.label, "symbols": fn.symbols(), "timeframes": fn.timeframes,
+                   "live": fn.live, "freeform": fn.freeform}
+            for name, fn in ds.SOURCES.items()
+        },
+    })
+
+
+@app.get("/api/candles")
+def candles():
+    a = request.args
+    src, symbol, tf = a.get("source"), a.get("symbol"), a.get("tf")
+    fn = ds.SOURCES.get(src)
+    if not fn or not symbol or tf not in fn.timeframes:
+        return jsonify(error="bad source/symbol/tf"), 400
+    try:
+        limit = min(max(int(a.get("limit", 300)), 1), 5000)
+        before = int(a["before"]) if a.get("before") else None
+        return jsonify(ds.candles(src, symbol, tf, limit, before))
+    except ValueError:
+        return jsonify(error="limit and before must be integers"), 400
+    except Exception as e:
+        return jsonify(error="%s: %s" % (type(e).__name__, e)), 502
+
+
+# --------------------------------------------------------------------- pages
+
+@app.get("/")
+def index():
+    return send_from_directory(".", "index.html")
+
+
+@app.get("/<path:name>")
+def asset(name):
+    if not name.endswith((".js", ".css")):       # never hand out app.py or the venv
+        abort(404)
+    return send_from_directory(".", name)
+
+
+if __name__ == "__main__":
+    app.run(port=5001, threaded=True, use_reloader=False)
