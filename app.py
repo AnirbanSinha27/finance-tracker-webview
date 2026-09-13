@@ -7,11 +7,39 @@ import queue
 import threading
 import time
 
+import requests
 from flask import Flask, Response, abort, jsonify, request, send_from_directory
 
 import data_source as ds
 
 app = Flask(__name__, static_folder=None)
+
+# ------------------------------------------------------------ keep-alive ping
+
+# Render's free plan sleeps an instance after 15 minutes with no inbound
+# request. Requesting our own public URL is an inbound request, so it resets
+# that timer. RENDER_EXTERNAL_URL is injected by Render, so this stays dormant
+# during local development.
+#
+# What this cannot do: wake an instance that already fell asleep — the thread is
+# asleep too. Point an external uptime monitor at /healthz if you need that.
+KEEPALIVE_URL = os.environ.get("RENDER_EXTERNAL_URL")
+KEEPALIVE_SECONDS = int(os.environ.get("KEEPALIVE_SECONDS", "600"))
+
+
+def _keepalive():
+    while True:
+        time.sleep(KEEPALIVE_SECONDS)
+        try:
+            r = requests.get(KEEPALIVE_URL.rstrip("/") + "/healthz", timeout=15)
+            print("keepalive %s" % r.status_code, flush=True)
+        except Exception as e:
+            print("keepalive failed: %s" % e, flush=True)
+
+
+if KEEPALIVE_URL:
+    threading.Thread(target=_keepalive, daemon=True).start()
+    print("keepalive: pinging %s every %ss" % (KEEPALIVE_URL, KEEPALIVE_SECONDS), flush=True)
 
 # ------------------------------------------------------ Yahoo tick relay (SSE)
 
@@ -168,6 +196,14 @@ def candles():
 
 
 # --------------------------------------------------------------------- pages
+
+@app.get("/healthz")
+def healthz():
+    with _lock:
+        watching = len(_union())
+    return jsonify(ok=True, browsers=len(_clients), watching=watching,
+                   yahoo_socket=_ws is not None)
+
 
 @app.get("/")
 def index():

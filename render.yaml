@@ -10,7 +10,8 @@ services:
     # half the browsers. Scale with threads, never with workers.
     startCommand: >
       gunicorn app:app --workers 1 --threads 16 --worker-class gthread
-      --timeout 120 --bind 0.0.0.0:$PORT
+      --timeout 120 --access-logfile - --bind 0.0.0.0:$PORT
+    healthCheckPath: /healthz
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.7"

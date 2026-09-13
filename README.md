@@ -28,8 +28,28 @@ One-click via the Render blueprint in `render.yaml`:
 
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/AnirbanSinha27/finance-tracker-webview)
 
-Or: Render dashboard -> New -> Blueprint -> pick this repo. Free plan sleeps
-after 15 minutes idle, so the first hit after a nap takes ~50s to wake.
+Or: Render dashboard -> New -> Blueprint -> pick this repo.
+
+### Keeping it always on
+
+A free Render instance sleeps after 15 minutes with no inbound request. The app
+pings its own public URL every 10 minutes (`RENDER_EXTERNAL_URL`, injected by
+Render), which counts as inbound traffic and resets that timer. It stays dormant
+locally, where the variable is unset. Tune with `KEEPALIVE_SECONDS`.
+
+Three things worth knowing before you rely on it:
+
+- **It eats the free allowance.** Render's free tier is 750 instance-hours per
+  month across *all* your free services. Never sleeping is ~730 hours, so this
+  one service will consume nearly all of it.
+- **It can't wake itself.** If the instance does sleep — a failed deploy, a
+  crash, a few missed pings — the pinging thread is asleep too, and the next
+  visitor eats the ~50s cold start. For wake-from-sleep, point a free external
+  monitor (UptimeRobot, cron-job.org) at `/healthz`.
+- **The guaranteed version costs money.** Render's paid Starter plan never
+  sleeps and needs none of this.
+
+`/healthz` reports connected browsers, watched symbols and upstream socket state.
 
 **Not Vercel/Netlify.** This needs a process that stays alive — a background
 thread holding Yahoo's websocket and an SSE connection held open per browser.
